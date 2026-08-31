@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: MIT
+name: WRT-WARM
+
+on:
+  workflow_dispatch:
+
+permissions: write-all
+
+jobs:
+  warm:
+    name: H5000M toolchain warm-up
+    uses: ./.github/workflows/WRT-CORE.yml
+    with:
+      WRT_CONFIG: H5000M-qmodem-next
+      WRT_THEME: design
+      WRT_NAME: H5000M
+      WRT_SSID: H5000M
+      WRT_WORD: '12345678'
+      WRT_IP: 192.168.10.1
+      WRT_PW: 无
+      WRT_REPO: https://github.com/immortalwrt/immortalwrt.git
+      WRT_BRANCH: master
+      WRT_SOURCE: immortalwrt/immortalwrt
+      WRT_PACKAGE: ''
+      WRT_TEST: warm

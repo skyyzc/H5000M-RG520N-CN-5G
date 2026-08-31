@@ -384,12 +384,28 @@ jobs:
           # 后面的重试与失败诊断分支永远不会执行（只会留下 exit code 2）。
           set +e -o pipefail
 
-          make -j$(nproc) 2>&1 | tee build.log
+          if [ "$WRT_TEST" = "warm" ]; then
+            echo "预热工具链：最长运行 300 分钟，为 Actions 缓存收尾预留时间"
+            timeout --signal=TERM --kill-after=5m 300m \
+              make toolchain/install -j$(nproc) 2>&1 | tee build.log
+            RC=${PIPESTATUS[0]}
+            if [ "$RC" -eq 124 ]; then
+              echo "::warning::工具链预热达到 300 分钟上限；本次已完成部分将由 save-always 缓存，再运行一次可续编"
+              exit 0
+            fi
+            exit "$RC"
+          fi
+
+          timeout --signal=TERM --kill-after=5m 300m \
+            make -j$(nproc) 2>&1 | tee build.log
           RC=${PIPESTATUS[0]}
 
-          if [ "$RC" -ne 0 ]; then
+          if [ "$RC" -eq 124 ]; then
+            echo "::error::固件编译达到 300 分钟命令上限；已预留时间保存缓存，请重新运行续编"
+          elif [ "$RC" -ne 0 ]; then
             echo "第一次编译失败（rc=$RC），保持并行重试并追加日志"
-            make -j$(nproc) V=s 2>&1 | tee -a build.log
+            timeout --signal=TERM --kill-after=5m 30m \
+              make -j$(nproc) V=s 2>&1 | tee -a build.log
             RC=${PIPESTATUS[0]}
           fi
 
@@ -431,7 +447,7 @@ jobs:
 
           cp -f ./.config ./upload/Config-"$WRT_CONFIG"-"$WRT_INFO"-"$WRT_BRANCH"-"$WRT_DATE".txt
 
-          if [[ $WRT_TEST != 'true' ]]; then
+          if [[ $WRT_TEST == 'false' ]]; then
             echo "WRT_KVER=$(find ./bin/targets/ -type f -name "*.manifest" -exec grep -oP '^kernel - \K[\d\.]+' {} \;)" >> $GITHUB_ENV
             echo "WRT_LIST=$(find ./bin/targets/ -type f -name "*.manifest" -exec grep -oP '^luci-(app|theme)[^ ]*' {} \; | tr '\n' ' ')" >> $GITHUB_ENV
 
@@ -450,7 +466,7 @@ jobs:
           fi
 
       - name: Release Firmware
-        if: env.WRT_TEST != 'true'
+        if: env.WRT_TEST == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{env.WRT_CONFIG}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_DATE}}

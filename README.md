@@ -12,6 +12,8 @@ Hiveton H5000M（Quectel RG520N-CN）的 ImmortalWrt 25.12 快照固件云编译
 
 Actions 启用工具链、下载目录和 2 GiB ccache 缓存，并在编译前清理 hosted runner 中与固件无关的大型预装 SDK。首次冷编译仍可能耗时数小时。编译失败时会保持并行重试，并在 Actions 注解中显示首个包级错误。
 
+首次冷编译如果无法在 GitHub 时限内完成，先手动运行 `WRT-WARM`。该工作流仅构建工具链，并在 300 分钟命令上限后留出时间保存缓存；如未完成可再运行一次续编。预热成功后再运行 `WRT-BUILD`。
+
 ## 预装内容
 
 - RG520N-CN：`a10463981/modem-5g`，QMI，VID:PID `2c7c:0801`
