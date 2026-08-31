@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 VIKINGYFY
+
+# 定时自动编译：Auto-Clean 清理完成后自动构建设备固件
+name: MTK-AUTO
+
+on:
+  # Auto-Clean 完成后自动触发
+  workflow_run:
+    workflows: ["Auto-Clean"]
+    types:
+      - completed
+  # 也可手动触发
+  workflow_dispatch:
+    inputs:
+      PACKAGE:
+        description: '手动追加插件包（多行请用换行隔开）'
+        required: false
+        type: string
+
+permissions: write-all
+
+jobs:
+  config:
+    name: ${{ matrix.CONFIG }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - CONFIG: H5000M-qmodem-next
+            SOURCE: immortalwrt/immortalwrt
+            BRANCH: master
+          - CONFIG: H5000M-qmodem
+            SOURCE: immortalwrt/immortalwrt
+            BRANCH: master
+
+
+    uses: ./.github/workflows/WRT-CORE.yml
+    with:
+      WRT_CONFIG: ${{ matrix.CONFIG }}
+
+      WRT_THEME: design
+      WRT_NAME: H5000M
+      WRT_SSID: H5000M
+      WRT_WORD: 12345678
+      WRT_IP: 192.168.10.1
+      WRT_PW: 无
+
+      WRT_REPO: https://github.com/${{ matrix.SOURCE }}.git
+      WRT_BRANCH: ${{ matrix.BRANCH }}
+      WRT_SOURCE: ${{ matrix.SOURCE }}
+
+      WRT_PACKAGE: ${{ inputs.PACKAGE }}
+      WRT_TEST: 'false'

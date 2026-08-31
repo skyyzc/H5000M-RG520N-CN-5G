@@ -1,0 +1,2 @@
+# 兼容原有 -qmodem 触发名称，实际套件为 modem-5g。
+CONFIG_PACKAGE_luci-app-modemserver=y

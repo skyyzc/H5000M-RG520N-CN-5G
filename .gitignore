@@ -1,0 +1,12 @@
+.DS_Store
+
+# 设备实测清单和原厂固件可能含标识符，不发布到 GitHub。
+inputs/
+
+# 本地编译产物
+wrt/
+bin/
+build_dir/
+dl/
+staging_dir/
+tmp/

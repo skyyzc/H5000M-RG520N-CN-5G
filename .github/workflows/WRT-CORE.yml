@@ -1,0 +1,470 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 VIKINGYFY
+
+# 云编译公用核心
+name: WRT-CORE
+
+on:
+  workflow_call:
+    inputs:
+      WRT_CONFIG:
+        required: true
+        type: string
+      WRT_THEME:
+        required: true
+        type: string
+      WRT_NAME:
+        required: true
+        type: string
+      WRT_SSID:
+        required: true
+        type: string
+      WRT_WORD:
+        required: true
+        type: string
+      WRT_IP:
+        required: true
+        type: string
+      WRT_PW:
+        required: true
+        type: string
+      WRT_REPO:
+        required: true
+        type: string
+      WRT_BRANCH:
+        required: true
+        type: string
+      WRT_SOURCE:
+        required: true
+        type: string
+      WRT_PACKAGE:
+        required: false
+        type: string
+      WRT_TEST:
+        required: false
+        type: string
+
+env:
+  GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+  WRT_CONFIG: ${{inputs.WRT_CONFIG}}
+  WRT_THEME: ${{inputs.WRT_THEME}}
+  WRT_NAME: ${{inputs.WRT_NAME}}
+  WRT_SSID: ${{inputs.WRT_SSID}}
+  WRT_WORD: ${{inputs.WRT_WORD}}
+  WRT_IP: ${{inputs.WRT_IP}}
+  WRT_PW: ${{inputs.WRT_PW}}
+  WRT_REPO: ${{inputs.WRT_REPO}}
+  WRT_BRANCH: ${{inputs.WRT_BRANCH}}
+  WRT_SOURCE: ${{inputs.WRT_SOURCE}}
+  WRT_PACKAGE: ${{inputs.WRT_PACKAGE}}
+  WRT_TEST: ${{inputs.WRT_TEST}}
+
+jobs:
+  core:
+    name: ${{inputs.WRT_SOURCE}}
+    runs-on: ubuntu-latest
+    # 略低于平台 6h 硬上限：触发硬上限会直接杀掉 runner，
+    # 缓存的 post 保存步骤会被整段跳过（见 AP3000M-qmodem 被取消的那次运行）
+    timeout-minutes: 345
+    steps:
+      - name: Checkout Projects
+        uses: actions/checkout@v4
+
+      - name: Initialization Environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt -yqq purge firefox
+          # 移除 GitHub runners 预置的 google-chrome apt 源：其镜像偶发哈希不一致
+          # （File has unexpected size / Mirror sync in progress?），会导致 `apt update`
+          # 返回非零并中断整个初始化步骤（Process completed with exit code 100）。
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*.list
+          # 即使个别非必需源临时不可用也不中断初始化（重试一次）
+          sudo -E apt -yqq update || sudo -E apt -yqq update
+          # 不做 full-upgrade / autoremove：托管 runner 每次全量升级要数分钟，
+          # 对 OpenWrt 编译没有收益，属于纯耗时项
+          sudo -E apt -yqq autoclean
+          sudo -E apt -yqq clean
+          sudo -E apt -yqq install dos2unix libfuse-dev ccache
+          sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+          sudo -E systemctl daemon-reload
+          sudo -E timedatectl set-timezone "Asia/Shanghai"
+
+          sudo mkdir -p /mnt/build_wrt
+          sudo chown $USER:$USER /mnt/build_wrt
+          sudo ln -s /mnt/build_wrt $GITHUB_WORKSPACE/wrt
+
+      - name: Initialization Values
+        run: |
+          case "$WRT_CONFIG" in
+            ''|*[!A-Za-z0-9._-]*)
+              echo "::error title=Invalid firmware configuration::WRT_CONFIG must contain only letters, numbers, dots, underscores, or hyphens."
+              exit 1
+              ;;
+          esac
+
+          CONFIG_FILE="$GITHUB_WORKSPACE/Config/$WRT_CONFIG.txt"
+          if [ ! -s "$CONFIG_FILE" ]; then
+            echo "::error title=Missing firmware configuration::Configuration '$WRT_CONFIG' was not found at $CONFIG_FILE."
+            echo "Available configurations:"
+            find "$GITHUB_WORKSPACE/Config" -maxdepth 1 -type f -name '*.txt' -printf '%f\n' | sed 's/\.txt$//'
+            exit 1
+          fi
+
+          WRT_TARGET="$(grep -m 1 -oP '^CONFIG_TARGET_\K[\w]+(?=\=y)' "$CONFIG_FILE")"
+          if [ -z "$WRT_TARGET" ]; then
+            echo "::error title=Invalid firmware configuration::Configuration '$WRT_CONFIG' does not define a target platform."
+            exit 1
+          fi
+
+          echo "WRT_DATE=$(TZ=UTC-8 date +"%y.%m.%d-%H.%M.%S")" >> $GITHUB_ENV
+          echo "WRT_MARK=${GITHUB_REPOSITORY%%/*}" >> $GITHUB_ENV
+          echo "WRT_INFO=${WRT_SOURCE%%/*}" >> $GITHUB_ENV
+          echo "WRT_CONFIG_FILE=$CONFIG_FILE" >> $GITHUB_ENV
+          echo "WRT_TARGET=$WRT_TARGET" >> $GITHUB_ENV
+          echo "WRT_WIFI=wifi-yes" >> $GITHUB_ENV
+          echo "WRT_KVER=none" >> $GITHUB_ENV
+          echo "WRT_LIST=none" >> $GITHUB_ENV
+          case "$WRT_CONFIG" in
+            *-qmodem)
+              echo "WRT_VARIANT=qmodem" >> $GITHUB_ENV
+              ;;
+            *)
+              echo "WRT_VARIANT=qmodem-next" >> $GITHUB_ENV
+              ;;
+          esac
+
+          # 根据配置推导机型显示名称
+          case "$WRT_CONFIG" in
+            H5000M-*)
+              WRT_MODEL="Hiveton H5000M (Quectel RG520N-CN)"
+              ;;
+            AP3000M-*)
+              WRT_MODEL="AirPi AP3000M"
+              ;;
+            X86-*)
+              WRT_MODEL="x86 通用平台"
+              ;;
+            *)
+              WRT_MODEL="Unknown Device"
+              ;;
+          esac
+          echo "WRT_MODEL=$WRT_MODEL" >> $GITHUB_ENV
+
+      - name: Clone Code
+        run: |
+          if ! git ls-remote --exit-code --heads "$WRT_REPO" "$WRT_BRANCH" >/dev/null; then
+            DEFAULT_BRANCH="$(git ls-remote --symref "$WRT_REPO" HEAD 2>/dev/null | awk '/^ref:/ {sub("refs/heads/", "", $2); print $2; exit}')"
+            echo "::error title=Source branch not found::Branch '$WRT_BRANCH' does not exist in $WRT_REPO."
+            if [ -n "$DEFAULT_BRANCH" ]; then
+              echo "The repository default branch is '$DEFAULT_BRANCH'. Update the BRANCH workflow input and rerun."
+            fi
+            exit 1
+          fi
+
+          git clone --depth=1 --single-branch --branch "$WRT_BRANCH" "$WRT_REPO" ./wrt/
+
+          cd ./wrt/ && echo "WRT_HASH=$(git log -1 --pretty=format:'%h')" >> $GITHUB_ENV
+
+          # GitHub Action 移除国内下载源
+          PROJECT_MIRRORS_FILE="./scripts/projectsmirrors.json"
+          if [ -f "$PROJECT_MIRRORS_FILE" ]; then
+            sed -i '/.cn\//d; /tencent/d; /aliyun/d' "$PROJECT_MIRRORS_FILE"
+          fi
+
+      - name: Check Scripts
+        run: |
+          find ./ -maxdepth 3 -type f -iregex ".*\(txt\|sh\)$" -exec dos2unix {} \; -exec chmod +x {} \;
+
+      - name: Check Caches (Toolchain & ccache)
+        id: check-cache
+        if: env.WRT_TEST != 'true'
+        uses: actions/cache@v4
+        with:
+          # 编译失败或超时也要保存：工具链（含最耗时的 rust/host）在头 1~2 小时就编好了，
+          # 不保存的话下次依旧从头冷编译，会陷入「超时→无缓存→再超时」的死循环
+          save-always: true
+          # 关键改动：缓存键只绑定「目标平台 + 源码 + 分支」，不再绑定 commit hash。
+          # 上游一有新提交也能通过 restore-keys 回退命中上次编译好的工具链。
+          key: wrt-tc-${{env.WRT_TARGET}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_HASH}}
+          restore-keys: |
+            wrt-tc-${{env.WRT_TARGET}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-
+          path: |
+            ./wrt/.ccache
+            ./wrt/staging_dir/host*
+            ./wrt/staging_dir/tool*
+
+      - name: Check Caches (Download)
+        if: env.WRT_TEST != 'true'
+        uses: actions/cache@v4
+        with:
+          # 编译失败或超时也要保存：工具链（含最耗时的 rust/host）在头 1~2 小时就编好了，
+          # 不保存的话下次依旧从头冷编译，会陷入「超时→无缓存→再超时」的死循环
+          save-always: true
+          # 下载的源码包与机型无关，按「源码 + 分支」单独缓存，避免多机型各存一份
+          key: wrt-dl-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_HASH}}
+          restore-keys: |
+            wrt-dl-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-
+          path: |
+            ./wrt/dl
+
+      - name: Update Caches
+        if: env.WRT_TEST != 'true'
+        run: |
+          if [ -d "./wrt/staging_dir" ]; then
+            find "./wrt/staging_dir" -type d -name "stamp" -not -path "*target*" | while read -r DIR; do
+              find "$DIR" -type f -exec touch {} +
+            done
+
+            mkdir -p ./wrt/tmp && echo "1" > ./wrt/tmp/.build
+
+            echo "toolchain skiped done!"
+          else
+            echo "caches missed!"
+          fi
+
+          # 不再在 cache miss 时删除历史缓存：
+          # 上面的 restore-keys 正是依赖历史缓存做前缀回退，删掉等于每次都冷启动。
+          # 配额交给 GitHub LRU 自动回收，必要时用 Cache-Clean 手动清理。
+
+      - name: Update Feeds
+        run: |
+          cd ./wrt/
+
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Custom Packages
+        run: |
+          cd ./wrt/package/
+
+          $GITHUB_WORKSPACE/Scripts/Packages.sh
+          $GITHUB_WORKSPACE/Scripts/Handles.sh
+
+      - name: Custom Settings
+        run: |
+          cd ./wrt/
+
+          if [[ "${WRT_CONFIG,,}" == *"test"* ]]; then
+            VARIANT_FILE="$GITHUB_WORKSPACE/Config/QMODEM-NEXT.txt"
+            [[ "$WRT_VARIANT" == "qmodem" ]] && VARIANT_FILE="$GITHUB_WORKSPACE/Config/QMODEM.txt"
+            cat "$WRT_CONFIG_FILE" "$VARIANT_FILE" >> .config
+          else
+            VARIANT_FILE="$GITHUB_WORKSPACE/Config/QMODEM-NEXT.txt"
+            [[ "$WRT_VARIANT" == "qmodem" ]] && VARIANT_FILE="$GITHUB_WORKSPACE/Config/QMODEM.txt"
+            cat "$WRT_CONFIG_FILE" "$GITHUB_WORKSPACE/Config/GENERAL.txt" "$VARIANT_FILE" >> .config
+          fi
+
+          # 启用 ccache，把编译缓存落到 ./.ccache（与上面缓存的 path 对应），
+          # 重复编译、仅改配置或插件时可大幅缩短耗时
+          echo "CONFIG_CCACHE=y" >> .config
+
+          $GITHUB_WORKSPACE/Scripts/Settings.sh
+
+          make defconfig && make clean
+
+      - name: Download Packages
+        if: env.WRT_TEST != 'true'
+        run: |
+          cd ./wrt/
+
+          make download -j$(nproc)
+
+      - name: Prebuild AirPi Rust Binary (AP3000M)
+        # 仅 AP3000M 需要。luci-app-airpi-fancontrol 的守护进程 airpi-fanctl 由 Rust 编写，
+        # 默认路径会让 OpenWrt 从源码构建一整套 rust/host（rustc + cargo + LLVM），约 1.5~3 小时，
+        # 这正是 AP3000M 比同为 filogic 的 H5000M 恒定慢约 2 小时的原因。
+        # 这里照搬上游 LianXia233/luci-app-airpi3000m-fancontrol 的 CI 做法：
+        # 用 runner 自带的 rustup 配合源码树里已构建好的 aarch64 musl 交叉链接器直接 cargo
+        # 交叉编译，再通过 AIRPI_PREBUILT=1 / AIRPI_PREBUILT_BIN 交给包 Makefile，
+        # 从而完全跳过 rust/host 的源码构建。预编译失败会自动回退，不影响固件产出。
+        if: contains(env.WRT_CONFIG, 'AP3000M') && env.WRT_TEST != 'true'
+        run: |
+          cd ./wrt/
+
+          # 用绝对路径：下面的子 shell 会 cd 进 $PKG_DIR/src，相对路径会失效
+          PKG_DIR="$(pwd)/package/luci-app-airpi-fancontrol"
+          PREBUILT_DIR="$(pwd)/airpi-prebuilt"
+
+          if [ ! -f "$PKG_DIR/src/Cargo.toml" ]; then
+            echo "::warning::未找到 $PKG_DIR/src/Cargo.toml，跳过预编译（将由源码构建 rust/host）"
+            exit 0
+          fi
+
+          # 失败即回退的正确写法：先在父 shell 关闭 errexit（GHA 的 run 默认是
+          # bash -e），再把受保护子 shell 当作普通语句执行并取回退出码。
+          # 不能写成 `if ( set -e; ... ); then`：作为 if 条件的复合命令会使其中的
+          # errexit 全部失效，子 shell 会一路跑到底，最终由最后一条命令的退出码
+          # 决定分支，中途失败被完全吞掉。
+          set +e
+          (
+            set -euxo pipefail
+
+            # 确保目标交叉链接器就绪：命中缓存时秒过，冷编译才会真正构建工具链
+            make toolchain/install -j$(nproc)
+
+            # 绝对路径：下面会 cd 进 $PKG_DIR/src，cargo 按当前工作目录解析相对
+            # linker，写相对路径会得到 "linker ... not found"
+            LINKER="$(find "$(pwd)/staging_dir" -type f -name 'aarch64-openwrt-linux-musl-gcc' -perm -111 | head -1)"
+            [ -n "$LINKER" ] || LINKER="$(find "$(pwd)/staging_dir" -type f -name 'aarch64-*linux-musl-gcc' -perm -111 | head -1)"
+            [ -n "$LINKER" ] || { echo "未找到 aarch64 musl 交叉链接器"; exit 1; }
+            LINKER="$(readlink -f "$LINKER")"
+            echo "使用交叉链接器: $LINKER"
+
+            # runner 镜像通常自带 rustup，缺失时最小化安装
+            if ! command -v rustup >/dev/null 2>&1; then
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+                | sh -s -- -y --profile minimal --default-toolchain stable
+            fi
+            export PATH="$HOME/.cargo/bin:$PATH"
+            rustup target add aarch64-unknown-linux-musl
+
+            # 用环境变量指定 linker，避免覆盖 runner 已有的 ~/.cargo/config.toml
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$LINKER"
+
+            cd "$PKG_DIR/src"
+            cargo build --locked --release --target aarch64-unknown-linux-musl
+
+            # 产物自检：cargo 退出 0 但产物缺失同样按失败处理，
+            # 绝不能带着空目录进入注入分支
+            BIN="target/aarch64-unknown-linux-musl/release/airpi-fanctl"
+            [ -f "$BIN" ] || { echo "cargo 未产出 $BIN"; exit 1; }
+
+            mkdir -p "$PREBUILT_DIR"
+            cp -f "$BIN" "$PREBUILT_DIR/airpi-fanctl"
+
+            # 让包走预编译分支，跳过 rust/host 源码构建
+            python3 "$GITHUB_WORKSPACE/Scripts/inject_airpi_prebuilt.py" "$PKG_DIR/Makefile"
+          )
+          RC=$?
+          set -e
+
+          if [ "$RC" -eq 0 ]; then
+            echo "airpi-fanctl 预编译完成，本次将跳过 rust/host 构建"
+          else
+            echo "::warning::airpi-fanctl 预编译失败（rc=$RC），回退到源码构建 rust/host（本次编译将额外增加约 1.5~3 小时）"
+            # 清掉半成品：包 Makefile 未带 AIRPI_PREBUILT 标记时仍会走源码构建，
+            # 留着二进制只会占空间并造成状态不一致
+            rm -rf "$PREBUILT_DIR"
+          fi
+
+          # 一致性兜底：Makefile 已被标记预编译但二进制缺失时，
+          # Build/Compile 里的 $(INSTALL_BIN) 会因 no such file 直接失败。
+          # 这里主动撤销注入，确保任何情况下都不会停在这个死状态。
+          if grep -q '^AIRPI_PREBUILT:=1$' "$PKG_DIR/Makefile" && [ ! -f "$PREBUILT_DIR/airpi-fanctl" ]; then
+            echo "::warning::预编译标记与二进制不一致，撤销注入并回退源码构建"
+            sed -i '/^AIRPI_PREBUILT:=1$/d; /^AIRPI_PREBUILT_BIN:=/d' "$PKG_DIR/Makefile"
+            rm -rf "$PREBUILT_DIR"
+          fi
+
+      - name: Compile Firmware
+        if: env.WRT_TEST != 'true'
+        run: |
+          cd ./wrt/
+
+          # 指向被缓存的 .ccache 目录，限制容量并开启压缩，避免占满 10GB 配额
+          export CCACHE_DIR="$(pwd)/.ccache"
+          export CCACHE_MAXSIZE=5G
+          export CCACHE_COMPRESS=true
+          ccache -z 2>/dev/null || true
+
+          # 失败重试必须保持并行：原来的 make -j1 V=s 会退化成单线程，
+          # 一次偶发失败就能把几小时的编译拖过上限被取消。
+          # 输出同时写入 build.log：失败时提取首个出错包并以 ::error:: 注解上报，
+          # 注解可经 check-runs API 直接读取，无需下载 blob 原始日志。
+          # 必须同时关闭 errexit：GHA 的 run 以 bash -e 执行，
+          # 开了 pipefail 后首次 make 失败会让整个步骤就地终止，
+          # 后面的重试与失败诊断分支永远不会执行（只会留下 exit code 2）。
+          set +e -o pipefail
+
+          make -j$(nproc) 2>&1 | tee build.log
+          RC=${PIPESTATUS[0]}
+
+          if [ "$RC" -ne 0 ]; then
+            echo "第一次编译失败（rc=$RC），保持并行重试并追加日志"
+            make -j$(nproc) V=s 2>&1 | tee -a build.log
+            RC=${PIPESTATUS[0]}
+          fi
+
+          if [ "$RC" -ne 0 ]; then
+            echo "::group::编译失败诊断"
+            # OpenWrt/ImmortalWrt 失败标志：ERROR: package/xxx failed to build / Error N / Image too big
+            grep -E "^(ERROR: |make(\\[[0-9]+\\])?: \*\*\* ).*(failed to build|Error [0-9]|too big)" build.log \
+              | sort -u | head -n 10 | while IFS= read -r LINE; do echo "::error::$LINE"; done
+
+            if ! grep -qE "^(ERROR: |make(\\[[0-9]+\\])?: \*\*\* )" build.log; then
+              echo "::error::未匹配到包级错误行，输出日志末尾 30 行"
+              tail -n 30 build.log
+            else
+              echo "--- 编译错误上下文（C/C++ / 链接 / 镜像）---"
+              grep -nE "error:|Error [0-9]+|collect2:|undefined reference|too big" build.log | head -n 25
+            fi
+            echo "::endgroup::"
+          fi
+
+          ccache -s 2>/dev/null || true
+
+          exit "$RC"
+
+      - name: Machine Information
+        run: |
+          cd ./wrt/
+
+          echo "======================="
+          lscpu | grep -E "name|Core|Thread"
+          echo "======================="
+          df -h
+          echo "======================="
+          du -h --max-depth=1
+          echo "======================="
+
+      - name: Package Firmware
+        run: |
+          cd ./wrt/ && mkdir ./upload/
+
+          cp -f ./.config ./upload/Config-"$WRT_CONFIG"-"$WRT_INFO"-"$WRT_BRANCH"-"$WRT_DATE".txt
+
+          if [[ $WRT_TEST != 'true' ]]; then
+            echo "WRT_KVER=$(find ./bin/targets/ -type f -name "*.manifest" -exec grep -oP '^kernel - \K[\d\.]+' {} \;)" >> $GITHUB_ENV
+            echo "WRT_LIST=$(find ./bin/targets/ -type f -name "*.manifest" -exec grep -oP '^luci-(app|theme)[^ ]*' {} \; | tr '\n' ' ')" >> $GITHUB_ENV
+
+            find ./bin/targets/ -iregex ".*\(buildinfo\|json\|sha256sums\|packages\)$" -exec rm -rf {} +
+
+            for FILE in $(find ./bin/targets/ -type f -iname "*$WRT_TARGET*") ; do
+              EXT=$(basename $FILE | cut -d '.' -f 2-)
+              NAME=$(basename $FILE | cut -d '.' -f 1 | grep -io "\($WRT_TARGET\).*")
+              NEW_FILE="$NAME"-"$WRT_INFO"-"$WRT_BRANCH"-"$WRT_WIFI"-"$WRT_DATE"."$EXT"
+              mv -f $FILE ./upload/$NEW_FILE
+            done
+
+            find ./bin/targets/ -type f -exec mv -f {} ./upload/ \;
+
+            make clean -j$(nproc)
+          fi
+
+      - name: Release Firmware
+        if: env.WRT_TEST != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{env.WRT_CONFIG}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_DATE}}
+          files: ./wrt/upload/*.*
+          body: |
+            ${{ env.WRT_MODEL }} 定制固件 · 基于 ImmortalWrt
+
+            5G 套件：modem-5g（配置标识：${{env.WRT_VARIANT}}）
+
+            源码：${{env.WRT_REPO}}
+            分支：${{env.WRT_BRANCH}}
+            提交：${{env.WRT_HASH}}
+
+            配置：${{env.WRT_CONFIG}}
+            平台：${{env.WRT_TARGET}}
+
+            登录地址：${{env.WRT_IP}}
+            登录密码：${{env.WRT_PW}}
+
+            WIFI 名称：${{env.WRT_SSID}}
+            WIFI 密码：${{env.WRT_WORD}}
+
+            内核版本：${{env.WRT_KVER}}
+            插件列表：${{env.WRT_LIST}}

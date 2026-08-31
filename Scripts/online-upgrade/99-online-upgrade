@@ -1,0 +1,17 @@
+#!/bin/sh
+# luci-app-online-upgrade 默认配置（H5000M 定制）
+# repo 留空，由 /etc/online-upgrade-device 中的 RELEASE_REPO 自动指向本仓库；
+# 本机构建身份自动解析对应 Release，实现按机型/固件类型匹配更新包。
+
+uci -q batch <<-EOF
+	set online-upgrade.settings.enabled='1'
+	set online-upgrade.settings.repo=''
+	set online-upgrade.settings.tag=''
+	set online-upgrade.settings.proxy=''
+	set online-upgrade.settings.firmware_pattern='squashfs-sysupgrade.*\.bin$'
+	set online-upgrade.settings.keep_config='1'
+	set online-upgrade.settings.last_upgrade_version='0'
+	commit online-upgrade
+EOF
+
+exit 0

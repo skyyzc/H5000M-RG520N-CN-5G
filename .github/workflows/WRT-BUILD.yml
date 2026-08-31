@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 VIKINGYFY
+
+# CI 项目
+name: WRT-BUILD
+
+# CI 计划
+on:
+  # 手动编译
+  workflow_dispatch:
+    inputs:
+      CONFIG:
+        description: '编译配置'
+        default: 'H5000M-qmodem-next'
+        required: true
+        type: choice
+        options:
+          - H5000M-qmodem-next
+          - H5000M-qmodem
+      PACKAGE:
+        description: '手动调整插件包，多个请用换行隔开'
+        required: false
+        type: string
+      TEST:
+        description: '仅输出配置文件，不编译固件'
+        default: false
+        required: true
+        type: boolean
+
+# CI 权限
+permissions: write-all
+
+# CI 任务
+jobs:
+  config:
+    name: ${{ inputs.CONFIG }}
+    # 调用公用编译核心 WRT-CORE.yml
+    uses: ./.github/workflows/WRT-CORE.yml
+    with:
+      # 编译配置
+      WRT_CONFIG: ${{ inputs.CONFIG }}
+      # 默认主题
+      WRT_THEME: design
+      # 默认主机名
+      WRT_NAME: H5000M
+      # 默认 WIFI 名称
+      WRT_SSID: H5000M
+      # 默认 WIFI 密码
+      WRT_WORD: 12345678
+      # 默认地址
+      WRT_IP: 192.168.10.1
+      # 默认密码，仅作提示，修改无用
+      WRT_PW: 无
+      # 源码链接
+      WRT_REPO: https://github.com/immortalwrt/immortalwrt.git
+      # 源码分支
+      WRT_BRANCH: master
+      # 源码名称
+      WRT_SOURCE: immortalwrt/immortalwrt
+      # 插件调整
+      WRT_PACKAGE: ${{ inputs.PACKAGE }}
+      # 仅输出配置文件
+      WRT_TEST: ${{ inputs.TEST }}
