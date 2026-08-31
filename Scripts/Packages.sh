@@ -8,7 +8,11 @@ clone_package() {
 	rm -rf "$name" "$checkout"
 	git clone --depth=1 --single-branch --branch "$branch" "https://github.com/$repo.git" "$checkout"
 	case "$mode" in
-		name) mv "$checkout" "$name" ;;
+		name)
+			if [ "$checkout" != "$name" ]; then
+				mv "$checkout" "$name"
+			fi
+			;;
 		pkg)
 			local source
 			source="$(find "$checkout" -mindepth 1 -maxdepth 4 -type d -name "$name" -print -quit)"
