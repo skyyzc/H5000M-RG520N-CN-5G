@@ -10,7 +10,7 @@ Hiveton H5000M（Quectel RG520N-CN）的 ImmortalWrt 25.12 快照固件云编译
 
 自动：`Auto-Clean` 每天北京时间 05:00 运行，完成后触发 `MTK-AUTO`。两个配置分别发布到以配置名开头的 Release，默认保留每个配置最新的 Release。
 
-Actions 启用工具链、下载目录和 ccache 缓存，首次冷编译仍可能耗时数小时。编译失败时会保持并行重试，并在 Actions 注解中显示首个包级错误。
+Actions 启用工具链、下载目录和 2 GiB ccache 缓存，并在编译前清理 hosted runner 中与固件无关的大型预装 SDK。首次冷编译仍可能耗时数小时。编译失败时会保持并行重试，并在 Actions 注解中显示首个包级错误。
 
 ## 预装内容
 

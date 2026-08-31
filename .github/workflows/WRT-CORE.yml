@@ -74,6 +74,13 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
+          # Hosted runner 预装的 Android/.NET/GHC/CodeQL 与路由器固件编译无关，
+          # 冷编译工具链需要大量空间，先清理这些明确目录。
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          sudo docker system prune --all --force --volumes || true
+          df -h /
+
           sudo -E apt -yqq purge firefox
           # 移除 GitHub runners 预置的 google-chrome apt 源：其镜像偶发哈希不一致
           # （File has unexpected size / Mirror sync in progress?），会导致 `apt update`
@@ -364,7 +371,7 @@ jobs:
 
           # 指向被缓存的 .ccache 目录，限制容量并开启压缩，避免占满 10GB 配额
           export CCACHE_DIR="$(pwd)/.ccache"
-          export CCACHE_MAXSIZE=5G
+          export CCACHE_MAXSIZE=2G
           export CCACHE_COMPRESS=true
           ccache -z 2>/dev/null || true
 

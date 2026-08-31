@@ -29,9 +29,10 @@ clone_package "luci-app-modemserver" "a10463981/modem-5g" "master"
 clone_package "luci-app-h5000m-fancontrol" "FAN789/luci-app-h5000m-fancontrol" "main"
 clone_package "luci-app-h5000m-netmode" "LianXia233/luci-app-h5000m-netmode" "main"
 
-# iStoreOS 风格与商店
+# iStoreOS 风格与商店。iStore 必须保留完整仓库目录，
+# 否则 luci-app-store 的 luci-lib-taskd/taskd 依赖不会进入构建系统。
 clone_package "luci-theme-design" "0x676e67/luci-theme-design" "main"
-clone_package "luci-app-store" "linkease/istore" "main" "pkg"
+clone_package "istore" "linkease/istore" "main"
 
 # 用户指定的第三方功能
 clone_package "luci-app-passwall2" "Openwrt-Passwall/openwrt-passwall2" "main" "pkg"
