@@ -186,15 +186,13 @@ jobs:
       - name: Check Caches (Toolchain & ccache)
         id: check-cache
         if: env.WRT_TEST != 'true'
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
-          # 编译失败或超时也要保存：工具链（含最耗时的 rust/host）在头 1~2 小时就编好了，
-          # 不保存的话下次依旧从头冷编译，会陷入「超时→无缓存→再超时」的死循环
-          save-always: true
-          # 关键改动：缓存键只绑定「目标平台 + 源码 + 分支」，不再绑定 commit hash。
-          # 上游一有新提交也能通过 restore-keys 回退命中上次编译好的工具链。
-          key: wrt-tc-${{env.WRT_TARGET}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_HASH}}
+          # 每次运行使用唯一主键，保证本轮新增的 ccache 可以写成新缓存；
+          # restore-keys 会优先恢复同一源码提交最近保存的一轮，再回退到同分支缓存。
+          key: wrt-tc-${{env.WRT_TARGET}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_HASH}}-${{github.run_id}}-${{github.run_attempt}}
           restore-keys: |
+            wrt-tc-${{env.WRT_TARGET}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_HASH}}-
             wrt-tc-${{env.WRT_TARGET}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-
           path: |
             ./wrt/.ccache
@@ -203,14 +201,11 @@ jobs:
 
       - name: Check Caches (Download)
         if: env.WRT_TEST != 'true'
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
-          # 编译失败或超时也要保存：工具链（含最耗时的 rust/host）在头 1~2 小时就编好了，
-          # 不保存的话下次依旧从头冷编译，会陷入「超时→无缓存→再超时」的死循环
-          save-always: true
-          # 下载的源码包与机型无关，按「源码 + 分支」单独缓存，避免多机型各存一份
-          key: wrt-dl-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_HASH}}
+          key: wrt-dl-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_HASH}}-${{github.run_id}}-${{github.run_attempt}}
           restore-keys: |
+            wrt-dl-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_HASH}}-
             wrt-dl-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-
           path: |
             ./wrt/dl
@@ -365,6 +360,7 @@ jobs:
           fi
 
       - name: Compile Firmware
+        id: compile
         if: env.WRT_TEST != 'true'
         run: |
           cd ./wrt/
@@ -390,10 +386,10 @@ jobs:
               make toolchain/install -j$(nproc) 2>&1 | tee build.log
             RC=${PIPESTATUS[0]}
             if [ "$RC" -eq 124 ]; then
-              echo "::warning::工具链预热达到 300 分钟上限；本次已完成部分将由 save-always 缓存，再运行一次可续编"
-              exit 0
+              echo "::warning::工具链预热达到 300 分钟上限；先显式保存本轮缓存，再运行一次可续编"
             fi
-            exit "$RC"
+            echo "rc=$RC" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           timeout --signal=TERM --kill-after=5m 300m \
@@ -427,7 +423,38 @@ jobs:
 
           ccache -s 2>/dev/null || true
 
-          exit "$RC"
+          # 编译步骤本身保持成功，让下面的 actions/cache/save 一定有机会执行；
+          # 缓存写完后再由独立步骤按原始返回码结束任务。
+          echo "rc=$RC" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Save Toolchain & ccache
+        if: always() && env.WRT_TEST != 'true'
+        uses: actions/cache/save@v4
+        with:
+          key: wrt-tc-${{env.WRT_TARGET}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_HASH}}-${{github.run_id}}-${{github.run_attempt}}
+          path: |
+            ./wrt/.ccache
+            ./wrt/staging_dir/host*
+            ./wrt/staging_dir/tool*
+
+      - name: Save Download Cache
+        if: always() && env.WRT_TEST != 'true'
+        uses: actions/cache/save@v4
+        with:
+          key: wrt-dl-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_HASH}}-${{github.run_id}}-${{github.run_attempt}}
+          path: ./wrt/dl
+
+      - name: Propagate Compile Result
+        if: always() && env.WRT_TEST != 'true' && steps.compile.outputs.rc != '0'
+        run: |
+          RC='${{steps.compile.outputs.rc}}'
+          if [ "$RC" = "124" ]; then
+            echo "::error::本轮达到编译时限，增量缓存已经保存；重新运行将从本轮成果续编"
+          else
+            echo "::error::固件编译失败（rc=$RC），诊断信息见 Compile Firmware 步骤"
+          fi
+          exit "${RC:-1}"
 
       - name: Machine Information
         run: |
