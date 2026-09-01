@@ -195,9 +195,18 @@ jobs:
             wrt-tc-${{env.WRT_TARGET}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_HASH}}-
             wrt-tc-${{env.WRT_TARGET}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-
           path: |
-            ./wrt/.ccache
             ./wrt/staging_dir/host*
             ./wrt/staging_dir/tool*
+
+      - name: Restore incremental ccache
+        if: env.WRT_TEST != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          key: wrt-cc-${{env.WRT_TARGET}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_HASH}}-${{github.run_id}}-${{github.run_attempt}}
+          restore-keys: |
+            wrt-cc-${{env.WRT_TARGET}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_HASH}}-
+            wrt-cc-${{env.WRT_TARGET}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-
+          path: ./wrt/.ccache
 
       - name: Check Caches (Download)
         if: env.WRT_TEST != 'true'
@@ -381,23 +390,25 @@ jobs:
           set +e -o pipefail
 
           if [ "$WRT_TEST" = "warm" ]; then
-            echo "预热工具链：最长运行 300 分钟，为 Actions 缓存收尾预留时间"
-            timeout --signal=TERM --kill-after=5m 300m \
+            echo "预热工具链：最长运行 240 分钟，为磁盘清理和缓存上传预留空间与时间"
+            timeout --signal=TERM --kill-after=5m 240m \
               make toolchain/install -j$(nproc) 2>&1 | tee build.log
             RC=${PIPESTATUS[0]}
             if [ "$RC" -eq 124 ]; then
-              echo "::warning::工具链预热达到 300 分钟上限；先显式保存本轮缓存，再运行一次可续编"
+              echo "::warning::工具链预热达到 240 分钟上限；先显式保存本轮缓存，再运行一次可续编"
             fi
             echo "rc=$RC" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          timeout --signal=TERM --kill-after=5m 300m \
+          # 上轮在 279 分钟时写满磁盘。这里于 240 分钟主动结束单轮，
+          # 先释放不可复用的 target 产物，再保存 ccache 供下一轮续编。
+          timeout --signal=TERM --kill-after=5m 240m \
             make -j$(nproc) 2>&1 | tee build.log
           RC=${PIPESTATUS[0]}
 
           if [ "$RC" -eq 124 ]; then
-            echo "::error::固件编译达到 300 分钟命令上限；已预留时间保存缓存，请重新运行续编"
+            echo "::error::固件编译达到 240 分钟安全上限；将清理磁盘并保存增量缓存，请重新运行续编"
           elif [ "$RC" -ne 0 ]; then
             echo "第一次编译失败（rc=$RC），保持并行重试并追加日志"
             timeout --signal=TERM --kill-after=5m 30m \
@@ -428,22 +439,23 @@ jobs:
           echo "rc=$RC" >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: Save Toolchain & ccache
+      - name: Reclaim space before cache save
         if: always() && env.WRT_TEST != 'true'
-        uses: actions/cache/save@v4
-        with:
-          key: wrt-tc-${{env.WRT_TARGET}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_HASH}}-${{github.run_id}}-${{github.run_attempt}}
-          path: |
-            ./wrt/.ccache
-            ./wrt/staging_dir/host*
-            ./wrt/staging_dir/tool*
+        run: |
+          # target 构建树和固件中间产物不能跨全新 runner 可靠复用，却占用数十 GB。
+          # 删除它们可确保 actions/cache 有空间生成压缩归档；保留 host/toolchain 与 ccache。
+          rm -rf ./wrt/build_dir/target-* ./wrt/staging_dir/target-* \
+            ./wrt/bin ./wrt/tmp ./wrt/build.log
+          ccache -c 2>/dev/null || true
+          df -h /
+          du -sh ./wrt/.ccache ./wrt/staging_dir/host* ./wrt/staging_dir/tool* 2>/dev/null || true
 
-      - name: Save Download Cache
+      - name: Save incremental ccache
         if: always() && env.WRT_TEST != 'true'
         uses: actions/cache/save@v4
         with:
-          key: wrt-dl-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_HASH}}-${{github.run_id}}-${{github.run_attempt}}
-          path: ./wrt/dl
+          key: wrt-cc-${{env.WRT_TARGET}}-${{env.WRT_INFO}}-${{env.WRT_BRANCH}}-${{env.WRT_HASH}}-${{github.run_id}}-${{github.run_attempt}}
+          path: ./wrt/.ccache
 
       - name: Propagate Compile Result
         if: always() && env.WRT_TEST != 'true' && steps.compile.outputs.rc != '0'
