@@ -30,9 +30,6 @@ jobs:
           - CONFIG: H5000M-qmodem-next
             SOURCE: immortalwrt/immortalwrt
             BRANCH: master
-          - CONFIG: H5000M-qmodem
-            SOURCE: immortalwrt/immortalwrt
-            BRANCH: master
 
 
     uses: ./.github/workflows/WRT-CORE.yml
