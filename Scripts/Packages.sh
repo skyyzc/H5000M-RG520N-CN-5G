@@ -26,6 +26,15 @@ clone_package() {
 
 # H5000M / RG520N-CN 专用组件
 clone_package "luci-app-modemserver" "a10463981/modem-5g" "master"
+# 上游 postinst 没有区分“构建固件时离线安装到镜像”和“真机在线安装”，
+# 导致 package/install 阶段在 runner 根目录执行 /etc/init.d/* 并失败。
+# OpenWrt/ImmortalWrt 标准做法是在 IPKG_INSTROOT 非空时跳过运行期动作。
+MODEM_MAKEFILE="luci-app-modemserver/Makefile"
+sed -i '/^set -e$/a\[ -n "$${IPKG_INSTROOT:-}" ] && exit 0' "$MODEM_MAKEFILE"
+grep -qF '[ -n "$${IPKG_INSTROOT:-}" ] && exit 0' "$MODEM_MAKEFILE" || {
+	echo "failed to guard modem-5g postinst for image build" >&2
+	exit 1
+}
 clone_package "luci-app-h5000m-fancontrol" "FAN789/luci-app-h5000m-fancontrol" "main"
 clone_package "luci-app-h5000m-netmode" "LianXia233/luci-app-h5000m-netmode" "main"
 
