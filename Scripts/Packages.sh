@@ -32,6 +32,15 @@ clone_package "luci-app-h5000m-netmode" "LianXia233/luci-app-h5000m-netmode" "ma
 # iStoreOS 风格与商店。iStore 必须保留完整仓库目录，
 # 否则 luci-app-store 的 luci-lib-taskd/taskd 依赖不会进入构建系统。
 clone_package "luci-theme-design" "0x676e67/luci-theme-design" "main"
+# ImmortalWrt master 已使用 APK 打包器。上游主题的版本号
+# 5.8.0-20240106 会被 APK 判定为非法 package version；保留版本语义，
+# 仅把日期前的连字符规范化为点号。
+THEME_MAKEFILE="luci-theme-design/Makefile"
+sed -i -E 's/^(PKG_VERSION:=[0-9][0-9A-Za-z.+~]*)-([0-9]{8})$/\1.\2/' "$THEME_MAKEFILE"
+if grep -qE '^PKG_VERSION:=.*-[0-9]{8}$' "$THEME_MAKEFILE"; then
+	echo "unsupported luci-theme-design version format" >&2
+	exit 1
+fi
 clone_package "istore" "linkease/istore" "main"
 
 # 用户指定的第三方功能
