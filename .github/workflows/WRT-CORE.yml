@@ -274,6 +274,27 @@ jobs:
 
           make defconfig && make clean
 
+          # H5000M 属于 filogic 的多 Profile 设备选择。MULTI_PROFILE=n 会退回
+          # 默认设备集合，直到 target/install 才因 openwrt_one 缺少 initramfs 失败。
+          # 在真正编译前验证最终配置，避免数小时后才发现目标选择漂移。
+          if [[ "$WRT_CONFIG" == H5000M-* ]]; then
+            grep -q '^CONFIG_TARGET_MULTI_PROFILE=y$' .config || {
+              echo "::error::H5000M requires CONFIG_TARGET_MULTI_PROFILE=y"
+              exit 1
+            }
+            grep -q '^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_hiveton_h5000m=y$' .config || {
+              echo "::error::H5000M target profile is not selected"
+              exit 1
+            }
+            UNEXPECTED_DEVICES="$(grep '^CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_.*=y$' .config \
+              | grep -v '_DEVICE_hiveton_h5000m=y$' || true)"
+            if [ -n "$UNEXPECTED_DEVICES" ]; then
+              echo "::error::Unexpected filogic device profiles selected:"
+              echo "$UNEXPECTED_DEVICES"
+              exit 1
+            fi
+          fi
+
       - name: Download Packages
         if: env.WRT_TEST != 'true'
         run: |
